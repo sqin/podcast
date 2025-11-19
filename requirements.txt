@@ -1,0 +1,23 @@
+# GPU的版本
+feedparser>=6.0.10
+openai-whisper
+dashscope>=1.17.0
+ffmpeg-python>=0.2.0
+requests>=2.31.0
+pyyaml>=6.0.1
+python-dateutil>=2.8.2
+torch>=2.0.0
+torchaudio>=2.0.0
+numpy>=1.24.0
+
+# feedparser>=6.0.10
+# openai-whisper>=20231117
+# dashscope>=1.17.0
+# ffmpeg-python>=0.2.0
+# requests>=2.31.0
+# pyyaml>=6.0.1
+# python-dateutil>=2.8.2
+# torch>=2.0.0+cpu
+# torchaudio>=2.0.0+cpu
+# numpy>=1.24.0
+# -f https://download.pytorch.org/whl/cpu
