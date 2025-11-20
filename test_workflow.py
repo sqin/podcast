@@ -238,7 +238,7 @@ def test_llm_processing(srt_path, mp3_path=None, title=None):
 
 
 def test_generate_final_txt(processed_mp3_path, srt_path, segments_to_remove, title=None):
-    """使用处理后的MP3和large模型生成TXT文件，并删除片头片尾内容"""
+    """使用处理后的MP3和large模型生成TXT文件"""
     if not processed_mp3_path:
         print("\n跳过生成最终TXT（没有处理后的MP3文件）")
         return None
@@ -273,41 +273,17 @@ def test_generate_final_txt(processed_mp3_path, srt_path, segments_to_remove, ti
     print(f"\n使用large模型 {large_model} 生成TXT文件...")
     print("    这可能需要一些时间，请耐心等待...")
     try:
-        # 生成临时TXT文件
-        temp_txt_path = processor.generate_txt(
+        # 直接生成到目标路径
+        txt_path.parent.mkdir(parents=True, exist_ok=True)
+        txt_path_str = processor.generate_txt(
             processed_mp3_path,
-            output_dir=config['paths']['txt_output']
+            output_dir=str(txt_path.parent),
+            output_filename=txt_path.name
         )
-        print(f"    ✓ TXT文件已生成: {temp_txt_path}")
-        
-        # 注意：由于处理后的MP3已经去除了片头片尾，生成的TXT理论上不包含片头片尾内容
-        # 但为了确保完整性，如果识别到了片头片尾片段，我们仍然尝试删除
-        # 由于时间戳已改变，这里使用文本匹配方式删除（可能不够精确，但通常可以工作）
-        if segments_to_remove:
-            print("    注意：处理后的MP3已去除片头片尾，TXT应不包含片头片尾内容")
-            print("    为保险起见，尝试从TXT中删除可能残留的片头片尾内容...")
-            text_editor = TextEditor()
-            # 使用原始SRT文件进行匹配（时间戳可能不准确，但文本内容应该匹配）
-            cleaned_txt_path = text_editor.remove_segments_from_txt(
-                txt_path=str(temp_txt_path),
-                srt_path=srt_path,
-                segments_to_remove=segments_to_remove,
-                output_path=str(txt_path)
-            )
-            # 删除临时文件
-            try:
-                Path(temp_txt_path).unlink()
-            except:
-                pass
-            print(f"    ✓ 已处理TXT文件")
-        else:
-            # 没有片头片尾，直接重命名
-            Path(temp_txt_path).rename(txt_path)
-        
-        print(f"    ✓ 最终TXT文件已保存: {txt_path}")
+        print(f"    ✓ TXT文件已生成: {txt_path_str}")
         
         # 显示TXT文件的前几行
-        with open(txt_path, 'r', encoding='utf-8') as f:
+        with open(txt_path_str, 'r', encoding='utf-8') as f:
             content = f.read()
             preview = content[:500] if len(content) > 500 else content
             print(f"\n    TXT文件预览（前500字符）:")
@@ -321,7 +297,7 @@ def test_generate_final_txt(processed_mp3_path, srt_path, segments_to_remove, ti
         traceback.print_exc()
         return None
     
-    return str(txt_path)
+    return str(txt_path_str)
 
 
 def main():
