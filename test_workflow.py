@@ -78,6 +78,96 @@ class ProcessRecordManager:
         self._save_records()
 
 
+def test_rss_search_and_download(search_text, use_existing=True, process_record_manager=None):
+    """通过标题搜索并下载episode"""
+    print("\n" + "=" * 60)
+    print(f"步骤 1: 搜索episode: {search_text}")
+    print("=" * 60)
+    
+    config = load_config()
+    parser = RSSParser(
+        feed_url=config['rss']['feed_url'],
+        download_dir=config['paths']['raw_audio'],
+        record_file=config['paths'].get('download_record', 'data/downloaded_episodes.json')
+    )
+    
+    # 搜索episode
+    matched_episodes = parser.search_episodes(search_text)
+    
+    if not matched_episodes:
+        print(f"\n✗ 未找到匹配的episode: {search_text}")
+        return []
+    
+    if len(matched_episodes) > 1:
+        # 多个匹配，打印列表
+        print(f"\n找到 {len(matched_episodes)} 个匹配的episode:")
+        print("-" * 60)
+        for i, episode in enumerate(matched_episodes, 1):
+            title = episode.get('title', 'Unknown')
+            pub_date = episode.get('published', '')
+            print(f"{i}. {title}")
+            print(f"   发布日期: {pub_date}")
+            print()
+        print("-" * 60)
+        print("请使用更精确的搜索关键词，或使用完整标题")
+        return []
+    
+    # 只有一个匹配，直接处理
+    episode = matched_episodes[0]
+    title = episode.get('title', 'Unknown')
+    pub_date = episode.get('published', '')
+    
+    print(f"\n✓ 找到匹配的episode: {title}")
+    
+    # 检查是否已处理
+    if process_record_manager and process_record_manager.is_episode_processed(episode):
+        print(f"  ✓ Episode已处理，跳过")
+        return []
+    
+    # 检查是否已下载
+    episode_data_list = []
+    if parser.is_episode_downloaded(episode):
+        if use_existing:
+            print(f"  ✓ Episode已下载，直接使用")
+            episode_id = parser._get_episode_id(episode)
+            if episode_id in parser.downloaded_episodes:
+                mp3_path = parser.downloaded_episodes[episode_id]['mp3_path']
+                print(f"  MP3路径: {mp3_path}")
+                episode_data_list.append({
+                    'title': title,
+                    'pub_date': pub_date,
+                    'mp3_path': mp3_path,
+                    'episode': episode
+                })
+            else:
+                # 如果记录中没有路径，尝试从文件名查找
+                from src.utils import sanitize_filename
+                safe_title = sanitize_filename(title)
+                mp3_path = Path(parser.download_dir) / f"{safe_title}.mp3"
+                if mp3_path.exists():
+                    print(f"  MP3路径: {mp3_path}")
+                    episode_data_list.append({
+                        'title': title,
+                        'pub_date': pub_date,
+                        'mp3_path': str(mp3_path),
+                        'episode': episode
+                    })
+        else:
+            print(f"  ⚠ Episode已下载，但use_existing=False，跳过")
+    else:
+        # 未下载，下载episode
+        print(f"  Episode未下载，开始下载...")
+        try:
+            episode_data = parser._download_single_episode(episode)
+            if episode_data:
+                print(f"  ✓ 下载完成: {episode_data['mp3_path']}")
+                episode_data_list.append(episode_data)
+        except Exception as e:
+            print(f"  ✗ 下载失败: {e}")
+    
+    return episode_data_list
+
+
 def test_rss_download(count=1, use_existing=True, process_record_manager=None):
     """获取episode列表（如果已下载则直接使用，否则下载）
     
@@ -503,17 +593,27 @@ def main():
         action='store_true',
         help='如果episode已下载，不使用已下载的，而是跳过（默认: 使用已下载的）'
     )
+    parser_cmd.add_argument(
+        '--search',
+        type=str,
+        default=None,
+        help='通过标题搜索episode（使用字符串包含匹配）'
+    )
     
     args = parser_cmd.parse_args()
     
     count = args.count
     use_existing = not args.no_use_existing
+    search_text = args.search
     
     print("=" * 60)
     print("播客工作流测试脚本")
     print("=" * 60)
     print(f"\n参数设置:")
-    print(f"  - 处理数量: {count} 个episode")
+    if search_text:
+        print(f"  - 搜索模式: {search_text}")
+    else:
+        print(f"  - 处理数量: {count} 个episode")
     print(f"  - 使用已下载: {'是' if use_existing else '否'}")
     print("\n本脚本将执行以下工作流：")
     print("  1. RSS下载MP3（如果已下载则跳过）")
@@ -541,12 +641,21 @@ def main():
     processed_count = len(process_record_manager.processed_episodes)
     print(f"已处理记录: {processed_count} 个episode")
     
-    # 步骤1: 获取episode列表（已下载则使用，未下载则下载）
-    episode_data_list = test_rss_download(
-        count=count, 
-        use_existing=use_existing,
-        process_record_manager=process_record_manager
-    )
+    # 步骤1: 获取episode列表（搜索模式或正常模式）
+    if search_text:
+        # 搜索模式
+        episode_data_list = test_rss_search_and_download(
+            search_text=search_text,
+            use_existing=use_existing,
+            process_record_manager=process_record_manager
+        )
+    else:
+        # 正常模式：获取最近的N个episode
+        episode_data_list = test_rss_download(
+            count=count, 
+            use_existing=use_existing,
+            process_record_manager=process_record_manager
+        )
     
     if not episode_data_list:
         print("\n没有可用的episode，测试结束")

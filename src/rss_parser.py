@@ -56,6 +56,36 @@ class RSSParser:
             return episodes[0]
         return None
     
+    def search_episodes(self, search_text):
+        """通过标题搜索episode（使用字符串包含匹配）
+        
+        Args:
+            search_text: 搜索文本（会在episode标题中查找）
+        
+        Returns:
+            匹配的episode列表
+        """
+        logger.info(f"搜索episode: {search_text}")
+        
+        # 获取所有episode
+        all_episodes = self.get_all_episodes()
+        
+        if not all_episodes:
+            logger.warning("没有找到任何episode")
+            return []
+        
+        # 搜索匹配的episode（不区分大小写）
+        search_text_lower = search_text.lower()
+        matched_episodes = []
+        
+        for episode in all_episodes:
+            title = episode.get('title', '')
+            if search_text_lower in title.lower():
+                matched_episodes.append(episode)
+        
+        logger.info(f"找到 {len(matched_episodes)} 个匹配的episode")
+        return matched_episodes
+    
     def _load_downloaded_episodes(self):
         """加载已下载的episode记录"""
         if not self.record_file.exists():
