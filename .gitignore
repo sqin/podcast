@@ -2,3 +2,4 @@ data/*
 outputs/*
 transcripts/*
 config.yaml
+*.pyc

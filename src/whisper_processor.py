@@ -10,11 +10,11 @@ logger = logging.getLogger(__name__)
 class WhisperProcessor:
     """Whisper处理器"""
     
-    def __init__(self, small_model="small", large_model="large-v3", device="cuda", single_model=None):
+    def __init__(self, small_model="tiny", large_model="large-v3", device="cuda", single_model=None):
         self.small_model = small_model
         self.large_model = large_model
         self.device = device
-        self.single_model = single_model  # 如果指定，则使用单个模型
+        self.single_model = single_model  # 如果指定，则使用单个模型（向后兼容）
         self._small_model_instance = None
         self._large_model_instance = None
         self._single_model_instance = None

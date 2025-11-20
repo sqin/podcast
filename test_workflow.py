@@ -97,13 +97,13 @@ def test_rss_download():
 
 
 def test_whisper_generation(mp3_path):
-    """使用单个模型同时生成SRT和TXT文件（如果已存在则跳过）"""
+    """使用最小模型生成SRT文件（用于识别片头片尾）"""
     if not mp3_path:
         print("\n跳过Whisper测试（没有MP3文件）")
-        return None, None
+        return None
     
     print("\n" + "=" * 60)
-    print("步骤 2: Whisper生成SRT和TXT")
+    print("步骤 2: Whisper生成SRT文件（使用最小模型）")
     print("=" * 60)
     
     config = load_config()
@@ -111,42 +111,28 @@ def test_whisper_generation(mp3_path):
     # 检查文件是否已存在
     mp3_name = Path(mp3_path).stem
     srt_path = Path(config['paths']['srt_output']) / f"{mp3_name}.srt"
-    txt_path = Path(config['paths']['txt_output']) / f"{mp3_name}.txt"
     
-    srt_exists = srt_path.exists()
-    txt_exists = txt_path.exists()
-    
-    if srt_exists and txt_exists:
-        print(f"\n✓ SRT和TXT文件已存在，跳过生成")
+    if srt_path.exists():
+        print(f"\n✓ SRT文件已存在，跳过生成")
         print(f"  SRT文件: {srt_path}")
-        print(f"  TXT文件: {txt_path}")
-        return str(srt_path), str(txt_path)
-    elif srt_exists:
-        print(f"\n⚠ SRT文件已存在，但TXT文件不存在")
-        print(f"  将重新生成SRT和TXT文件")
-    elif txt_exists:
-        print(f"\n⚠ TXT文件已存在，但SRT文件不存在")
-        print(f"  将重新生成SRT和TXT文件")
+        return str(srt_path)
     
-    # 使用单个模型（从配置中读取，如果没有则使用large_model）
-    single_model = config['whisper'].get('single_model') or config['whisper']['large_model']
+    # 使用最小模型（从配置中读取）
+    min_model = config['whisper'].get('min_model', 'tiny')
     processor = WhisperProcessor(
-        small_model=config['whisper']['small_model'],
+        small_model=min_model,
         large_model=config['whisper']['large_model'],
-        device=config['whisper']['device'],
-        single_model=single_model
+        device=config['whisper']['device']
     )
     
-    print(f"\n使用模型 {single_model} 同时生成SRT和TXT文件...")
+    print(f"\n使用最小模型 {min_model} 生成SRT文件...")
     print("    这可能需要一些时间，请耐心等待...")
     try:
-        srt_path, txt_path = processor.generate_both(
+        srt_path = processor.generate_srt(
             mp3_path,
-            srt_output_dir=config['paths']['srt_output'],
-            txt_output_dir=config['paths']['txt_output']
+            output_dir=config['paths']['srt_output']
         )
         print(f"    ✓ SRT文件已生成: {srt_path}")
-        print(f"    ✓ TXT文件已生成: {txt_path}")
         
         # 显示SRT文件的前几行
         with open(srt_path, 'r', encoding='utf-8') as f:
@@ -156,30 +142,21 @@ def test_whisper_generation(mp3_path):
             for line in lines:
                 print(f"    {line.rstrip()}")
             print("    " + "-" * 50)
-        
-        # 显示TXT文件的前几行
-        with open(txt_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-            preview = content[:500] if len(content) > 500 else content
-            print(f"\n    TXT文件预览（前500字符）:")
-            print("    " + "-" * 50)
-            print(f"    {preview}...")
-            print("    " + "-" * 50)
             
     except Exception as e:
         print(f"    ✗ 生成失败: {e}")
         import traceback
         traceback.print_exc()
-        return None, None
+        return None
     
-    return srt_path, txt_path
+    return srt_path
 
 
-def test_llm_processing(srt_path, txt_path, mp3_path=None, title=None):
-    """大模型处理：识别片头片尾、去除音频、处理文本"""
+def test_llm_processing(srt_path, mp3_path=None, title=None):
+    """大模型处理：识别片头片尾、去除音频"""
     if not srt_path:
         print("\n跳过大模型处理测试（没有SRT文件）")
-        return None, None
+        return None
     
     print("\n" + "=" * 60)
     print("步骤 3: 大模型处理（识别片头片尾）")
@@ -193,8 +170,6 @@ def test_llm_processing(srt_path, txt_path, mp3_path=None, title=None):
     
     segments_to_remove = None
     
-    # 检查是否已有识别结果（可以通过检查处理后的文件是否存在来判断）
-    # 但为了准确性，我们仍然需要识别结果来生成文件，所以这里不跳过
     # 识别片头片尾时间段
     if srt_path:
         print("\n3.1 识别片头片尾时间段...")
@@ -212,7 +187,7 @@ def test_llm_processing(srt_path, txt_path, mp3_path=None, title=None):
             print(f"    ✗ 片头片尾识别失败: {e}")
             import traceback
             traceback.print_exc()
-            return None, None
+            return None
     
     # 步骤4: 去除片头片尾，生成新的MP3
     processed_mp3_path = None
@@ -259,75 +234,94 @@ def test_llm_processing(srt_path, txt_path, mp3_path=None, title=None):
     else:
         print("\n步骤 4: 跳过去除片头片尾（没有MP3文件）")
     
-    # 步骤5: 处理文本（添加人名、分段、翻译）并删除片头片尾内容
-    processed_txt_path = None
-    if txt_path:
-        # 检查处理后的TXT是否已存在
-        output_dir = Path(config['paths']['outputs'])
-        final_txt_path = output_dir / f"{Path(txt_path).stem}_processed.txt"
-        
-        if final_txt_path.exists():
-            print("\n步骤 5: 处理转录文本（添加人名、分段、翻译）并删除片头片尾...")
-            print(f"    ✓ 处理后的TXT文件已存在，跳过处理: {final_txt_path}")
-            processed_txt_path = str(final_txt_path)
-            
-            # 显示处理后的内容预览
-            with open(processed_txt_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                preview = content[:800] if len(content) > 800 else content
-                print(f"\n    处理后的内容预览（前800字符）:")
-                print("    " + "-" * 50)
-                print(f"    {preview}...")
-                print("    " + "-" * 50)
-        else:
-            print("\n步骤 5: 处理转录文本（添加人名、分段、翻译）并删除片头片尾...")
-            print("    这可能需要一些时间，请耐心等待...")
-            try:
-                # 先处理文本（添加人名、分段、翻译）
-                processed_content = processor.process_transcript(txt_path, title=title)
-                
-                # 保存处理后的内容到临时文件
-                output_dir.mkdir(parents=True, exist_ok=True)
-                temp_processed_file = output_dir / f"{Path(txt_path).stem}_processed_temp.txt"
-                with open(temp_processed_file, 'w', encoding='utf-8') as f:
-                    f.write(processed_content)
-                
-                # 如果有片头片尾片段，从处理后的文本中删除对应内容
-                if segments_to_remove:
-                    print("    正在从文本中删除片头片尾内容...")
-                    text_editor = TextEditor()
-                    processed_txt_path = text_editor.remove_segments_from_txt(
-                        txt_path=str(temp_processed_file),
-                        srt_path=srt_path,
-                        segments_to_remove=segments_to_remove,
-                        output_path=str(final_txt_path)
-                    )
-                    # 删除临时文件
-                    temp_processed_file.unlink()
-                else:
-                    # 没有片头片尾，直接使用处理后的文件
-                    temp_processed_file.rename(final_txt_path)
-                    processed_txt_path = str(final_txt_path)
-                
-                print(f"    ✓ 内容处理完成，已保存到: {processed_txt_path}")
-                
-                # 显示处理后的内容预览
-                with open(processed_txt_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    preview = content[:800] if len(content) > 800 else content
-                    print(f"\n    处理后的内容预览（前800字符）:")
-                    print("    " + "-" * 50)
-                    print(f"    {preview}...")
-                    print("    " + "-" * 50)
-                
-            except Exception as e:
-                print(f"    ✗ 内容处理失败: {e}")
-                import traceback
-                traceback.print_exc()
-    else:
-        print("\n步骤 5: 跳过内容处理（没有TXT文件）")
+    return processed_mp3_path, segments_to_remove
+
+
+def test_generate_final_txt(processed_mp3_path, srt_path, segments_to_remove, title=None):
+    """使用处理后的MP3和large模型生成TXT文件，并删除片头片尾内容"""
+    if not processed_mp3_path:
+        print("\n跳过生成最终TXT（没有处理后的MP3文件）")
+        return None
     
-    return processed_mp3_path, processed_txt_path
+    print("\n" + "=" * 60)
+    print("步骤 5: 生成最终TXT文件（使用large模型）")
+    print("=" * 60)
+    
+    config = load_config()
+    
+    # 检查文件是否已存在
+    mp3_name = Path(processed_mp3_path).stem
+    # 移除_no_ads后缀（如果有）
+    if mp3_name.endswith('_no_ads'):
+        mp3_name = mp3_name[:-7]
+    
+    txt_path = Path(config['paths']['txt_output']) / f"{mp3_name}_final.txt"
+    
+    if txt_path.exists():
+        print(f"\n✓ 最终TXT文件已存在，跳过生成")
+        print(f"  TXT文件: {txt_path}")
+        return str(txt_path)
+    
+    # 使用large模型生成TXT
+    large_model = config['whisper'].get('large_model', 'large-v3')
+    processor = WhisperProcessor(
+        small_model=config['whisper'].get('min_model', 'tiny'),
+        large_model=large_model,
+        device=config['whisper']['device']
+    )
+    
+    print(f"\n使用large模型 {large_model} 生成TXT文件...")
+    print("    这可能需要一些时间，请耐心等待...")
+    try:
+        # 生成临时TXT文件
+        temp_txt_path = processor.generate_txt(
+            processed_mp3_path,
+            output_dir=config['paths']['txt_output']
+        )
+        print(f"    ✓ TXT文件已生成: {temp_txt_path}")
+        
+        # 注意：由于处理后的MP3已经去除了片头片尾，生成的TXT理论上不包含片头片尾内容
+        # 但为了确保完整性，如果识别到了片头片尾片段，我们仍然尝试删除
+        # 由于时间戳已改变，这里使用文本匹配方式删除（可能不够精确，但通常可以工作）
+        if segments_to_remove:
+            print("    注意：处理后的MP3已去除片头片尾，TXT应不包含片头片尾内容")
+            print("    为保险起见，尝试从TXT中删除可能残留的片头片尾内容...")
+            text_editor = TextEditor()
+            # 使用原始SRT文件进行匹配（时间戳可能不准确，但文本内容应该匹配）
+            cleaned_txt_path = text_editor.remove_segments_from_txt(
+                txt_path=str(temp_txt_path),
+                srt_path=srt_path,
+                segments_to_remove=segments_to_remove,
+                output_path=str(txt_path)
+            )
+            # 删除临时文件
+            try:
+                Path(temp_txt_path).unlink()
+            except:
+                pass
+            print(f"    ✓ 已处理TXT文件")
+        else:
+            # 没有片头片尾，直接重命名
+            Path(temp_txt_path).rename(txt_path)
+        
+        print(f"    ✓ 最终TXT文件已保存: {txt_path}")
+        
+        # 显示TXT文件的前几行
+        with open(txt_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+            preview = content[:500] if len(content) > 500 else content
+            print(f"\n    TXT文件预览（前500字符）:")
+            print("    " + "-" * 50)
+            print(f"    {preview}...")
+            print("    " + "-" * 50)
+            
+    except Exception as e:
+        print(f"    ✗ 生成失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+    
+    return str(txt_path)
 
 
 def main():
@@ -343,11 +337,12 @@ def main():
     print("=" * 60)
     print("\n本脚本将执行以下工作流：")
     print("  1. RSS下载MP3（如果已下载则跳过）")
-    print("  2. Whisper使用单个模型同时生成SRT和TXT")
+    print("  2. Whisper使用最小模型生成SRT文件（用于识别片头片尾）")
     print("  3. 大模型识别片头片尾时间段")
     print("  4. 根据时间戳去除片头片尾，生成新MP3")
-    print("  5. 处理文本（添加人名、分段、翻译）并删除片头片尾内容")
+    print("  5. 使用处理后的MP3和large模型生成最终TXT文件（删除片头片尾内容）")
     print("  6. 将最终MP3和TXT移到完成处理目录")
+    print("  7. 清理中间文件")
     print("\n" + "=" * 60)
     
     # 设置日志
@@ -380,63 +375,96 @@ def main():
             print("\n没有可用的MP3文件，测试结束")
             return
     
-    # 步骤2: Whisper生成（使用单个模型同时生成SRT和TXT）
-    srt_path, txt_path = test_whisper_generation(mp3_path)
+    # 步骤2: Whisper生成SRT（使用最小模型）
+    srt_path = test_whisper_generation(mp3_path)
     
-    if not srt_path or not txt_path:
+    if not srt_path:
         print("\nWhisper生成失败，工作流终止")
         return
     
-    # 步骤3-5: 大模型处理（识别片头片尾、去除音频、处理文本）
-    processed_mp3_path, processed_txt_path = test_llm_processing(
-        srt_path, txt_path, mp3_path=mp3_path, title=title if 'title' in locals() else None
+    # 步骤3-4: 大模型处理（识别片头片尾、去除音频）
+    processed_mp3_path, segments_to_remove = test_llm_processing(
+        srt_path, mp3_path=mp3_path, title=title if 'title' in locals() else None
     )
     
+    if not processed_mp3_path:
+        print("\n音频处理失败，工作流终止")
+        return
+    
+    # 步骤5: 使用处理后的MP3生成最终TXT文件
+    final_txt_path = test_generate_final_txt(
+        processed_mp3_path, srt_path, segments_to_remove, 
+        title=title if 'title' in locals() else None
+    )
+    
+    if not final_txt_path:
+        print("\nTXT生成失败，工作流终止")
+        return
+    
     # 步骤6: 将最终文件移到完成处理目录
-    if processed_mp3_path and processed_txt_path:
-        print("\n" + "=" * 60)
-        print("步骤 6: 移动到完成处理目录")
-        print("=" * 60)
+    print("\n" + "=" * 60)
+    print("步骤 6: 移动到完成处理目录")
+    print("=" * 60)
+    
+    completed_dir = Path(config['paths'].get('completed', 'data/completed'))
+    completed_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 生成最终文件名（使用episode标题）
+    episode_name = Path(mp3_path).stem
+    final_mp3_name = f"{episode_name}_final.mp3"
+    final_txt_name = f"{episode_name}_final.txt"
+    
+    final_mp3_path = completed_dir / final_mp3_name
+    final_txt_path_completed = completed_dir / final_txt_name
+    
+    # 移动文件到完成目录
+    import shutil
+    shutil.move(processed_mp3_path, final_mp3_path)
+    shutil.move(final_txt_path, final_txt_path_completed)
+    
+    print(f"    ✓ MP3已移动到: {final_mp3_path}")
+    print(f"    ✓ TXT已移动到: {final_txt_path_completed}")
+    
+    # 步骤7: 清理中间文件
+    print("\n" + "=" * 60)
+    print("步骤 7: 清理中间文件")
+    print("=" * 60)
+    
+    try:
+        # 删除SRT文件（不再需要）
+        if srt_path and Path(srt_path).exists():
+            Path(srt_path).unlink()
+            print(f"    ✓ 已删除SRT文件: {srt_path}")
         
-        completed_dir = Path(config['paths'].get('completed', 'data/completed'))
-        completed_dir.mkdir(parents=True, exist_ok=True)
+        # 删除处理后的音频目录中的临时文件（如果存在）
+        processed_audio_dir = Path(config['paths']['processed_audio'])
+        if processed_audio_dir.exists():
+            for file in processed_audio_dir.glob("*_no_ads.mp3"):
+                if file.exists():
+                    file.unlink()
+                    print(f"    ✓ 已删除临时MP3文件: {file}")
         
-        # 生成最终文件名（使用episode标题）
-        episode_name = Path(mp3_path).stem
-        final_mp3_name = f"{episode_name}_final.mp3"
-        final_txt_name = f"{episode_name}_final.txt"
+        # 删除txt_output目录中的临时文件
+        txt_output_dir = Path(config['paths']['txt_output'])
+        if txt_output_dir.exists():
+            for file in txt_output_dir.glob("*_final.txt"):
+                if file.exists() and str(file) != str(final_txt_path_completed):
+                    file.unlink()
+                    print(f"    ✓ 已删除临时TXT文件: {file}")
         
-        final_mp3_path = completed_dir / final_mp3_name
-        final_txt_path = completed_dir / final_txt_name
-        
-        # 复制文件到完成目录
-        import shutil
-        shutil.copy2(processed_mp3_path, final_mp3_path)
-        shutil.copy2(processed_txt_path, final_txt_path)
-        
-        print(f"    ✓ MP3已移动到: {final_mp3_path}")
-        print(f"    ✓ TXT已移动到: {final_txt_path}")
+        print("    ✓ 中间文件清理完成")
+    except Exception as e:
+        print(f"    ⚠ 清理中间文件时出错: {e}")
     
     # 总结
     print("\n" + "=" * 60)
     print("工作流完成！")
     print("=" * 60)
-    print("\n生成的文件：")
-    if mp3_path:
-        print(f"  - 原始MP3文件: {mp3_path}")
-    if processed_mp3_path:
-        print(f"  - 去除片头片尾后的MP3: {processed_mp3_path}")
-    if srt_path:
-        print(f"  - SRT文件: {srt_path}")
-    if txt_path:
-        print(f"  - 原始TXT文件: {txt_path}")
-    if processed_txt_path:
-        print(f"  - 处理后的TXT文件: {processed_txt_path}")
-    if processed_mp3_path and processed_txt_path:
-        completed_dir = Path(config['paths'].get('completed', 'data/completed'))
-        print(f"\n最终文件（完成处理目录）:")
-        print(f"  - MP3: {completed_dir / f'{Path(mp3_path).stem}_final.mp3'}")
-        print(f"  - TXT: {completed_dir / f'{Path(txt_path).stem}_final.txt'}")
+    print("\n最终文件（完成处理目录）:")
+    completed_dir = Path(config['paths'].get('completed', 'data/completed'))
+    episode_name = Path(mp3_path).stem
+    print(f"  - MP3: {completed_dir / f'{episode_name}_final.mp3'}")
+    print(f"  - TXT: {completed_dir / f'{episode_name}_final.txt'}")
 
 
 if __name__ == "__main__":

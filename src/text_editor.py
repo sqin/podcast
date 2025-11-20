@@ -85,32 +85,113 @@ class TextEditor:
             logger.info(f"找到 {len(texts_to_remove)} 个需要删除的文本片段")
             
             # 从原始文本中删除这些片段
-            # 按行处理，删除包含这些文本的行
-            lines = original_text.split('\n')
-            filtered_lines = []
+            # 支持连续文本（不是按行）
+            filtered_text = original_text
             removed_count = 0
             
-            for line in lines:
-                line_stripped = line.strip()
-                should_remove = False
-                
-                # 检查这一行是否包含要删除的文本
-                for text_to_remove in texts_to_remove:
-                    # 使用模糊匹配，因为文本可能有细微差异
-                    if text_to_remove.lower() in line_stripped.lower() or line_stripped.lower() in text_to_remove.lower():
-                        # 如果匹配度足够高（超过50%），则删除
-                        if len(text_to_remove) > 0 and len(line_stripped) > 0:
-                            similarity = min(len(text_to_remove), len(line_stripped)) / max(len(text_to_remove), len(line_stripped))
-                            if similarity > 0.5:
-                                should_remove = True
-                                removed_count += 1
-                                break
-                
-                if not should_remove:
-                    filtered_lines.append(line)
+            # 按文本长度排序，先删除长的片段（避免短片段被长片段包含）
+            sorted_texts = sorted(texts_to_remove, key=len, reverse=True)
             
-            # 重新组合文本
-            filtered_text = '\n'.join(filtered_lines)
+            logger.info(f"开始删除 {len(sorted_texts)} 个文本片段")
+            
+            for idx, text_to_remove in enumerate(sorted_texts, 1):
+                text_to_remove_clean = text_to_remove.strip()
+                if not text_to_remove_clean:
+                    continue
+                
+                original_length = len(filtered_text)
+                matched = False
+                
+                # 策略1: 直接文本匹配（忽略大小写）
+                pattern1 = re.escape(text_to_remove_clean)
+                if re.search(pattern1, filtered_text, re.IGNORECASE):
+                    filtered_text = re.sub(pattern1, '', filtered_text, flags=re.IGNORECASE)
+                    if len(filtered_text) < original_length:
+                        removed_count += 1
+                        matched = True
+                        logger.debug(f"[{idx}/{len(sorted_texts)}] 删除（直接匹配）: {text_to_remove_clean[:60]}...")
+                
+                # 策略2: 如果直接匹配失败，尝试去除标点符号和空格后匹配
+                if not matched:
+                    # 去除标点符号和多余空格
+                    text_clean = re.sub(r'[^\w\s]', '', text_to_remove_clean)
+                    text_clean = re.sub(r'\s+', ' ', text_clean).strip()
+                    
+                    if len(text_clean) > 10:  # 只对较长的文本使用此策略
+                        # 在原文中查找（去除标点后）
+                        original_clean = re.sub(r'[^\w\s]', '', filtered_text)
+                        original_clean = re.sub(r'\s+', ' ', original_clean)
+                        
+                        if text_clean.lower() in original_clean.lower():
+                            # 找到匹配位置
+                            match_idx = original_clean.lower().find(text_clean.lower())
+                            if match_idx != -1:
+                                # 计算在原始文本中的大致位置
+                                # 通过字符计数找到对应位置
+                                clean_char_count = 0
+                                for i, char in enumerate(filtered_text):
+                                    if char.isalnum() or char.isspace():
+                                        clean_char_count += 1
+                                        if clean_char_count >= match_idx:
+                                            # 找到匹配开始位置
+                                            match_start = max(0, i - 20)  # 向前扩展20字符
+                                            match_end = min(len(filtered_text), i + len(text_to_remove_clean) + 100)  # 向后扩展
+                                            
+                                            # 尝试找到完整的句子边界
+                                            sentence_start = max(0, filtered_text.rfind('.', 0, match_start))
+                                            if sentence_start == -1:
+                                                sentence_start = match_start
+                                            else:
+                                                sentence_start += 1
+                                            
+                                            sentence_end = filtered_text.find('.', match_end - 100)
+                                            if sentence_end == -1:
+                                                sentence_end = match_end
+                                            else:
+                                                sentence_end += 1
+                                            
+                                            # 删除这个范围
+                                            filtered_text = filtered_text[:sentence_start] + filtered_text[sentence_end:]
+                                            removed_count += 1
+                                            matched = True
+                                            logger.debug(f"[{idx}/{len(sorted_texts)}] 删除（清理匹配）: {text_to_remove_clean[:60]}...")
+                                            break
+                
+                # 策略3: 关键词匹配（如果前两种都失败）
+                if not matched and len(text_to_remove_clean) > 15:
+                    words = re.findall(r'\b\w{4,}\b', text_to_remove_clean.lower())  # 提取4字符以上的词
+                    if len(words) >= 3:
+                        # 检查原文中是否包含至少3个这些关键词
+                        text_lower = filtered_text.lower()
+                        matched_words = sum(1 for word in words[:5] if word in text_lower)
+                        if matched_words >= 3:
+                            # 找到包含这些关键词的句子并删除
+                            # 使用第一个关键词的位置
+                            first_word = words[0]
+                            word_pos = text_lower.find(first_word)
+                            if word_pos != -1:
+                                # 扩展删除范围
+                                sentence_start = max(0, filtered_text.rfind('.', 0, word_pos))
+                                if sentence_start == -1:
+                                    sentence_start = max(0, word_pos - 100)
+                                else:
+                                    sentence_start += 1
+                                
+                                sentence_end = filtered_text.find('.', word_pos)
+                                if sentence_end == -1:
+                                    sentence_end = min(len(filtered_text), word_pos + 200)
+                                else:
+                                    sentence_end += 1
+                                
+                                filtered_text = filtered_text[:sentence_start] + filtered_text[sentence_end:]
+                                removed_count += 1
+                                matched = True
+                                logger.debug(f"[{idx}/{len(sorted_texts)}] 删除（关键词匹配）: {text_to_remove_clean[:60]}...")
+            
+            # 清理多余的空格（保留句子结构）
+            filtered_text = re.sub(r' +', ' ', filtered_text)  # 多个空格合并为一个
+            filtered_text = re.sub(r'\s+([.,!?;:])', r'\1', filtered_text)  # 标点前的空格
+            filtered_text = filtered_text.strip()
             
             # 清理多余的空行（连续3个以上空行合并为2个）
             filtered_text = re.sub(r'\n{3,}', '\n\n', filtered_text)

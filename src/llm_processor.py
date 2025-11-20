@@ -152,8 +152,40 @@ class LLMProcessor:
             logger.error(f"片头片尾识别失败: {e}")
             raise
     
+    def _split_text_into_chunks(self, text, max_chunk_size=3000):
+        """将文本分割成多个块，尽量在句子边界处分割"""
+        # 如果文本较短，直接返回
+        if len(text) <= max_chunk_size:
+            return [text]
+        
+        chunks = []
+        current_chunk = ""
+        
+        # 按句子分割（句号、问号、感叹号）
+        sentences = re.split(r'([.!?]\s+)', text)
+        
+        for i in range(0, len(sentences), 2):
+            sentence = sentences[i]
+            if i + 1 < len(sentences):
+                sentence += sentences[i + 1]  # 包含标点和空格
+            
+            # 如果当前块加上新句子不超过限制，添加到当前块
+            if len(current_chunk) + len(sentence) <= max_chunk_size:
+                current_chunk += sentence
+            else:
+                # 保存当前块，开始新块
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = sentence
+        
+        # 添加最后一个块
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+        
+        return chunks
+    
     def process_transcript(self, txt_path, title=None):
-        """处理转录文本：添加人名、分段、翻译"""
+        """处理转录文本：添加人名、分段、翻译（支持分段处理）"""
         try:
             logger.info(f"开始处理转录文本: {txt_path}")
             
@@ -161,8 +193,45 @@ class LLMProcessor:
             with open(txt_path, 'r', encoding='utf-8') as f:
                 transcript = f.read()
             
-            # 构建提示词 - 使用更详细的指导提升准确性
-            prompt = f"""你是一个专业的播客内容处理专家。请仔细处理以下英文播客转录文本。
+            transcript_length = len(transcript)
+            logger.info(f"原始文本长度: {transcript_length} 字符")
+            
+            # 如果文本较长，分段处理
+            max_chunk_size = 3000  # 每个分块最大字符数（约1500-2000单词）
+            chunks = self._split_text_into_chunks(transcript, max_chunk_size)
+            
+            if len(chunks) > 1:
+                logger.info(f"文本较长，将分成 {len(chunks)} 段进行处理")
+                processed_chunks = []
+                
+                for i, chunk in enumerate(chunks, 1):
+                    logger.info(f"处理第 {i}/{len(chunks)} 段（长度: {len(chunk)} 字符）...")
+                    processed_chunk = self._process_single_chunk(chunk, title, chunk_index=i, total_chunks=len(chunks))
+                    processed_chunks.append(processed_chunk)
+                
+                # 合并所有处理后的段落
+                processed_content = "\n\n---\n\n".join(processed_chunks)
+                logger.info(f"所有段落处理完成，总长度: {len(processed_content)} 字符")
+            else:
+                # 文本较短，直接处理
+                logger.info("文本较短，直接处理")
+                processed_content = self._process_single_chunk(transcript, title)
+            
+            logger.info("转录文本处理完成")
+            return processed_content
+            
+        except Exception as e:
+            logger.error(f"转录文本处理失败: {e}")
+            raise
+    
+    def _process_single_chunk(self, chunk_text, title=None, chunk_index=None, total_chunks=None):
+        """处理单个文本块"""
+        # 构建提示词
+        chunk_info = ""
+        if chunk_index and total_chunks:
+            chunk_info = f"\n注意：这是第 {chunk_index}/{total_chunks} 段，请保持格式一致，不要添加'段首'或'段尾'标记。"
+        
+        prompt = f"""你是一个专业的播客内容处理专家。请仔细处理以下英文播客转录文本。
 
 ## 处理步骤：
 
@@ -188,53 +257,63 @@ class LLMProcessor:
 - 保留重要的英文术语（如专业词汇、品牌名）并加括号说明
 - 注意文化差异，使用地道的中文表达
 
-播客标题：{title if title else '未知'}
+播客标题：{title if title else '未知'}{chunk_info}
 
 转录文本：
-{transcript}
+{chunk_text}
 
 ## 输出格式：
 
-【说话人1】：[中文翻译]
-[段落内容]
+【说话人1】：
+[英文原文]
+[中文翻译]
 
-【说话人2】：[中文翻译]
-[段落内容]
+【说话人2】：
+[英文原文]
+[中文翻译]
 
 ...
 
+重要：每段必须包含英文原文和中文翻译两部分，英文原文在上，中文翻译在下。
+
 ## 质量要求：
 - 准确识别说话人，不要混淆
+- 每段必须包含完整的英文原文和中文翻译
 - 翻译准确、自然、流畅
 - 分段合理，逻辑清晰
 - 保持原文的语气和风格"""
-            
-            messages = [
-                {
-                    "role": "system",
-                    "content": """你是一个专业的播客内容处理专家，具有以下能力：
+        
+        messages = [
+            {
+                "role": "system",
+                "content": """你是一个专业的播客内容处理专家，具有以下能力：
 1. 准确识别不同说话人的语言特征和说话风格
 2. 理解对话的上下文和逻辑关系
 3. 进行自然流畅的中文翻译，保持原文语气
 4. 合理分段，保持逻辑完整性
 
 请仔细分析，确保翻译质量和分段合理性。"""
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-            
-            # 调用API - 适中的temperature保持创造性，增加max_tokens以处理长文本
-            processed_content = self._call_api(messages, temperature=0.5, max_tokens=6000)
-            
-            logger.info("转录文本处理完成")
-            return processed_content
-            
-        except Exception as e:
-            logger.error(f"转录文本处理失败: {e}")
-            raise
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+        
+        # 估算max_tokens：原文长度 + 翻译后长度（通常翻译后会更长）
+        estimated_tokens = len(chunk_text) * 2  # 英文+中文，大约2倍
+        max_tokens = max(6000, estimated_tokens // 4)  # 至少6000，根据内容动态调整
+        
+        if chunk_index:
+            logger.debug(f"第 {chunk_index} 段：估算需要 {estimated_tokens} tokens，设置max_tokens为 {max_tokens}")
+        
+        processed_content = self._call_api(messages, temperature=0.5, max_tokens=max_tokens)
+        
+        # 检查返回内容是否完整
+        if processed_content.endswith('...') or len(processed_content) < len(chunk_text) * 0.3:
+            logger.warning(f"返回内容可能不完整，长度: {len(processed_content)}，原始长度: {len(chunk_text)}")
+        
+        return processed_content
     
     def _srt_time_to_seconds(self, srt_time):
         """将SRT时间格式转换为秒数"""
