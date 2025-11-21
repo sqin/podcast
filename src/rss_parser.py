@@ -3,9 +3,15 @@ import feedparser
 import requests
 import logging
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
 from .utils import ensure_dir, sanitize_filename
 
 logger = logging.getLogger(__name__)
@@ -167,8 +173,19 @@ class RSSParser:
         logger.error("未找到MP3下载URL")
         return None
     
-    def download_mp3(self, url, filename=None):
-        """下载MP3文件"""
+    def download_mp3(self, url, filename=None, target_dir=None, show_progress=True, timeout=600):
+        """下载MP3文件
+        
+        Args:
+            url: MP3下载URL
+            filename: 文件名（可选）
+            target_dir: 目标目录（可选，默认使用self.download_dir）
+            show_progress: 是否显示下载进度（默认True）
+            timeout: 下载超时时间（秒，默认600秒=10分钟）
+        
+        Raises:
+            TimeoutError: 如果下载超时
+        """
         try:
             if not filename:
                 # 从URL中提取文件名
@@ -179,25 +196,121 @@ class RSSParser:
             
             # 清理文件名
             filename = sanitize_filename(filename)
-            filepath = Path(self.download_dir) / filename
+            
+            # 使用指定的目录或默认目录
+            download_dir = Path(target_dir) if target_dir else Path(self.download_dir)
+            download_dir.mkdir(parents=True, exist_ok=True)
+            filepath = download_dir / filename
             
             # 如果文件已存在，跳过下载
             if filepath.exists():
                 logger.info(f"文件已存在，跳过下载: {filepath}")
                 return str(filepath)
             
-            logger.info(f"开始下载MP3: {url} -> {filepath}")
+            logger.info(f"开始下载MP3: {url} -> {filepath} (超时: {timeout}秒)")
             
-            # 下载文件
-            response = requests.get(url, stream=True, timeout=30)
+            # 下载文件（连接超时30秒，读取超时使用timeout参数）
+            response = requests.get(url, stream=True, timeout=(30, timeout))
             response.raise_for_status()
             
-            # 保存文件
-            with open(filepath, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+            # 获取文件总大小
+            total_size = int(response.headers.get('content-length', 0))
             
-            logger.info(f"MP3下载完成: {filepath}")
+            # 保存文件，显示进度
+            downloaded_size = 0
+            start_time = time.time()
+            last_update_time = start_time
+            last_downloaded = 0
+            last_chunk_time = start_time  # 记录最后一次收到数据的时间
+            
+            # 创建进度条
+            if show_progress and total_size > 0 and HAS_TQDM:
+                # 使用tqdm显示进度
+                progress_bar = tqdm(
+                    total=total_size,
+                    unit='B',
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    desc=filename[:50] if len(filename) <= 50 else filename[:47] + '...',
+                    ncols=100,
+                    miniters=1
+                )
+            else:
+                progress_bar = None
+                if show_progress and total_size > 0:
+                    # 显示文件大小信息
+                    total_mb = total_size / 1024 / 1024
+                    print(f"  文件大小: {total_mb:.2f} MB")
+            
+            try:
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        current_time = time.time()
+                        
+                        # 检查总体超时
+                        if current_time - start_time > timeout:
+                            raise TimeoutError(f"下载超时: 超过 {timeout} 秒 ({timeout/60:.1f} 分钟)")
+                        
+                        # 检查数据接收超时（如果30秒没有收到新数据，认为卡住了）
+                        if chunk:
+                            last_chunk_time = current_time
+                            f.write(chunk)
+                            downloaded_size += len(chunk)
+                            
+                            # 更新进度条
+                            if progress_bar:
+                                progress_bar.update(len(chunk))
+                            elif show_progress and total_size == 0:
+                                # 如果不知道总大小，显示已下载大小
+                                if current_time - last_update_time >= 1.0:  # 每秒更新一次
+                                    speed = (downloaded_size - last_downloaded) / (current_time - last_update_time)
+                                    speed_mb = speed / 1024 / 1024
+                                    downloaded_mb = downloaded_size / 1024 / 1024
+                                    print(f"\r  下载中: {downloaded_mb:.2f} MB | 速度: {speed_mb:.2f} MB/s", end='', flush=True)
+                                    last_update_time = current_time
+                                    last_downloaded = downloaded_size
+                        else:
+                            # 如果没有收到数据，检查是否超时
+                            if current_time - last_chunk_time > 60:  # 60秒没有收到数据
+                                raise TimeoutError(f"下载卡住: 60秒未收到数据")
+                
+                # 关闭进度条
+                if progress_bar:
+                    progress_bar.close()
+                elif show_progress and total_size == 0:
+                    print()  # 换行
+                
+                # 计算平均速度
+                elapsed_time = time.time() - start_time
+                if elapsed_time > 0:
+                    avg_speed = downloaded_size / elapsed_time / 1024 / 1024  # MB/s
+                    file_size_mb = downloaded_size / 1024 / 1024
+                    logger.info(f"MP3下载完成: {filepath} ({file_size_mb:.2f} MB, 平均速度: {avg_speed:.2f} MB/s, 耗时: {elapsed_time:.1f}秒)")
+                else:
+                    logger.info(f"MP3下载完成: {filepath}")
+                
+            except TimeoutError:
+                if progress_bar:
+                    progress_bar.close()
+                # 如果超时，删除不完整的文件
+                if filepath.exists():
+                    try:
+                        filepath.unlink()
+                        logger.warning(f"已删除不完整的文件: {filepath}")
+                    except:
+                        pass
+                raise
+            except Exception as e:
+                if progress_bar:
+                    progress_bar.close()
+                # 如果下载失败，删除不完整的文件
+                if filepath.exists():
+                    try:
+                        filepath.unlink()
+                    except:
+                        pass
+                raise e
+            
             return str(filepath)
             
         except Exception as e:
